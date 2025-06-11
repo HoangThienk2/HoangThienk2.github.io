@@ -861,10 +861,10 @@
           }
           
           // Use CORS proxy to bypass mixed content issue
-          const proxyUrl = 'https://cors-anywhere.herokuapp.com/';
+          const proxyUrl = 'https://api.allorigins.win/raw?url=';
           const targetUrl = `http://211.239.114.79:3000/api/sync/${telegramUserId}`;
           
-          const response = await fetch(proxyUrl + targetUrl, {
+          const response = await fetch(proxyUrl + encodeURIComponent(targetUrl), {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
@@ -937,10 +937,10 @@
           console.log(`🌐 Loading game state from DATABASE for user: ${telegramUserId}`);
           
           // Use CORS proxy to bypass mixed content issue
-          const proxyUrl = 'https://cors-anywhere.herokuapp.com/';
+          const proxyUrl = 'https://api.allorigins.win/raw?url=';
           const targetUrl = `http://211.239.114.79:3000/api/user/${telegramUserId}`;
           
-          const response = await fetch(proxyUrl + targetUrl, {
+          const response = await fetch(proxyUrl + encodeURIComponent(targetUrl), {
             headers: {
               "X-Requested-With": "XMLHttpRequest"
             }
