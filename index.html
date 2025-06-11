@@ -905,7 +905,15 @@
               console.log("✅ Server confirmed HP:", result.data.hp);
             }
           } else {
-            console.error("❌ Failed to sync game state:", response.statusText);
+            const errorText = await response.text();
+            console.error("❌ Failed to sync game state:", response.status, errorText);
+            
+            // Handle rate limiting
+            if (response.status === 429) {
+              console.log("⏳ Rate limited - waiting before retry...");
+              setTimeout(() => syncGameStateToServer(gameState), 2000);
+              return;
+            }
             
             // CRITICAL: Always retry HP=0 syncs
             if (isHPZero) {
