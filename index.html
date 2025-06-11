@@ -860,7 +860,7 @@
             console.log(`🔄 Syncing game state to server (HP: ${gameState.hp}, Critical: ${isHPCritical})...`);
           }
           
-          const response = await fetch(`/api/sync/${telegramUserId}`, {
+          const response = await fetch(`http://211.239.114.79:3000/api/sync/${telegramUserId}`, {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
@@ -930,7 +930,7 @@
 
         try {
           console.log(`🌐 Loading game state from DATABASE for user: ${telegramUserId}`);
-          const response = await fetch(`/api/user/${telegramUserId}`);
+          const response = await fetch(`http://211.239.114.79:3000/api/user/${telegramUserId}`);
 
           if (response.ok) {
             const result = await response.json();
@@ -1961,7 +1961,7 @@
 
             // Sync HP recovery with server
             try {
-              const response = await fetch(`/api/user/${telegramUserId}`, {
+              const response = await fetch(`http://211.239.114.79:3000/api/user/${telegramUserId}`, {
                 method: "POST",
                 headers: {
                   "Content-Type": "application/json",
@@ -2387,7 +2387,7 @@
           const state = loadGameState();
 
           // First, get latest data from server
-          const getResponse = await fetch(`/api/user/${telegramUserId}`);
+          const getResponse = await fetch(`http://211.239.114.79:3000/api/user/${telegramUserId}`);
           if (getResponse.ok) {
             const serverData = await getResponse.json();
             if (serverData.success && serverData.data) {
@@ -2406,7 +2406,7 @@
           }
 
           // Then sync current state to server
-          const response = await fetch(`/api/sync/${telegramUserId}`, {
+          const response = await fetch(`http://211.239.114.79:3000/api/sync/${telegramUserId}`, {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
