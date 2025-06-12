@@ -901,6 +901,125 @@
         }
       }
 
+      // CORS Proxy configuration with multiple fallbacks
+      const CORS_PROXIES = [
+        'https://cors-anywhere.herokuapp.com/',
+        'https://api.allorigins.win/raw?url=',
+        'https://corsproxy.io/?'
+      ];
+
+      // Try multiple CORS proxies for POST requests
+      async function makeProxiedPOSTRequest(url, body, headers = {}) {
+        const errors = [];
+        
+        // Try cors-anywhere first (best for POST)
+        try {
+          const response = await fetch(CORS_PROXIES[0] + url, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Requested-With": "XMLHttpRequest",
+              ...headers
+            },
+            body: body,
+          });
+          console.log("🌐 Using cors-anywhere for POST request");
+          return response;
+        } catch (error) {
+          errors.push(`cors-anywhere: ${error.message}`);
+          console.log("❌ cors-anywhere failed:", error.message);
+        }
+
+        // Try corsproxy.io
+        try {
+          const response = await fetch(CORS_PROXIES[2] + encodeURIComponent(url), {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Requested-With": "XMLHttpRequest",
+              ...headers
+            },
+            body: body,
+          });
+          console.log("🌐 Using corsproxy.io for POST request");
+          return response;
+        } catch (error) {
+          errors.push(`corsproxy.io: ${error.message}`);
+          console.log("❌ corsproxy.io failed:", error.message);
+        }
+
+        // Last resort: try direct connection (will likely fail due to mixed content)
+        try {
+          const response = await fetch(url, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              ...headers
+            },
+            body: body,
+          });
+          console.log("🔗 Using direct connection for POST request");
+          return response;
+        } catch (error) {
+          errors.push(`direct: ${error.message}`);
+          console.log("❌ Direct connection failed:", error.message);
+        }
+
+        throw new Error(`All proxy methods failed: ${errors.join(', ')}`);
+      }
+
+      // Try multiple CORS proxies for GET requests
+      async function makeProxiedGETRequest(url, headers = {}) {
+        const errors = [];
+        
+        // Try cors-anywhere first
+        try {
+          const response = await fetch(CORS_PROXIES[0] + url, {
+            headers: {
+              "X-Requested-With": "XMLHttpRequest",
+              ...headers
+            }
+          });
+          console.log("🌐 Using cors-anywhere for GET request");
+          return response;
+        } catch (error) {
+          errors.push(`cors-anywhere: ${error.message}`);
+          console.log("❌ cors-anywhere failed:", error.message);
+        }
+
+        // Try allorigins (good for GET requests)
+        try {
+          const response = await fetch(CORS_PROXIES[1] + encodeURIComponent(url), {
+            headers: {
+              "X-Requested-With": "XMLHttpRequest",
+              ...headers
+            }
+          });
+          console.log("🌐 Using allorigins for GET request");
+          return response;
+        } catch (error) {
+          errors.push(`allorigins: ${error.message}`);
+          console.log("❌ allorigins failed:", error.message);
+        }
+
+        // Try corsproxy.io
+        try {
+          const response = await fetch(CORS_PROXIES[2] + encodeURIComponent(url), {
+            headers: {
+              "X-Requested-With": "XMLHttpRequest",
+              ...headers
+            }
+          });
+          console.log("🌐 Using corsproxy.io for GET request");
+          return response;
+        } catch (error) {
+          errors.push(`corsproxy.io: ${error.message}`);
+          console.log("❌ corsproxy.io failed:", error.message);
+        }
+
+        throw new Error(`All proxy methods failed: ${errors.join(', ')}`);
+      }
+
       // API functions for syncing with server
       async function syncGameStateToServer(gameState) {
         if (!telegramUserId) return;
@@ -918,46 +1037,17 @@
               console.log(`🔄 Syncing game state to server (HP: ${gameState.hp}, Critical: ${isHPCritical})...`);
             }
             
-            // Try direct connection first, then fallback to proxy
-            let response;
-            let usedProxy = false;
+            const requestBody = JSON.stringify({
+              ...gameState,
+              timestamp: Date.now(),
+              syncType: isHPZero ? 'hp_zero_critical' : (isHPCritical ? 'critical' : 'normal'),
+              forceSync: isHPZero
+            });
             
-            try {
-              // Direct connection attempt
-              response = await fetch(`http://211.239.114.79:3000/api/sync/${telegramUserId}`, {
-                method: "POST",
-                headers: {
-                  "Content-Type": "application/json",
-                },
-                body: JSON.stringify({
-                  ...gameState,
-                  timestamp: Date.now(),
-                  syncType: isHPZero ? 'hp_zero_critical' : (isHPCritical ? 'critical' : 'normal'),
-                  forceSync: isHPZero
-                }),
-              });
-            } catch (directError) {
-              console.log("🔄 Direct connection failed, trying proxy...");
-              
-              // Fallback to CORS proxy
-              const proxyUrl = 'https://api.allorigins.win/raw?url=';
-              const targetUrl = `http://211.239.114.79:3000/api/sync/${telegramUserId}`;
-              
-              response = await fetch(proxyUrl + encodeURIComponent(targetUrl), {
-                method: "POST",
-                headers: {
-                  "Content-Type": "application/json",
-                  "X-Requested-With": "XMLHttpRequest"
-                },
-                body: JSON.stringify({
-                  ...gameState,
-                  timestamp: Date.now(),
-                  syncType: isHPZero ? 'hp_zero_critical' : (isHPCritical ? 'critical' : 'normal'),
-                  forceSync: isHPZero
-                }),
-              });
-              usedProxy = true;
-            }
+            const targetUrl = `http://211.239.114.79:3000/api/sync/${telegramUserId}`;
+            
+            // Use the robust proxy system
+            const response = await makeProxiedPOSTRequest(targetUrl, requestBody);
 
             if (response.ok) {
               const result = await response.json();
@@ -1026,15 +1116,10 @@
         try {
           console.log(`🌐 Loading game state from DATABASE for user: ${telegramUserId}`);
           
-          // Use CORS proxy to bypass mixed content issue
-          const proxyUrl = 'https://api.allorigins.win/raw?url=';
           const targetUrl = `http://211.239.114.79:3000/api/user/${telegramUserId}`;
           
-          const response = await fetch(proxyUrl + encodeURIComponent(targetUrl), {
-            headers: {
-              "X-Requested-With": "XMLHttpRequest"
-            }
-          });
+          // Use the robust proxy system
+          const response = await makeProxiedGETRequest(targetUrl);
 
           if (response.ok) {
             const result = await response.json();
