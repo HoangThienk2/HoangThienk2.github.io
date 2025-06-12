@@ -845,6 +845,62 @@
         return telegramUserId;
       }
 
+      // API request queue to prevent overwhelming the server
+      let apiRequestQueue = [];
+      let isProcessingQueue = false;
+      let lastAPICallTime = 0;
+      const MIN_API_INTERVAL = 200; // Minimum 200ms between API calls
+
+      // Process API requests one by one with proper spacing
+      async function processAPIQueue() {
+        if (isProcessingQueue || apiRequestQueue.length === 0) return;
+        
+        isProcessingQueue = true;
+        
+        while (apiRequestQueue.length > 0) {
+          const request = apiRequestQueue.shift();
+          
+          // Ensure minimum interval between API calls
+          const timeSinceLastCall = Date.now() - lastAPICallTime;
+          if (timeSinceLastCall < MIN_API_INTERVAL) {
+            await new Promise(resolve => setTimeout(resolve, MIN_API_INTERVAL - timeSinceLastCall));
+          }
+          
+          try {
+            await request.execute();
+            lastAPICallTime = Date.now();
+            
+            // Small delay between requests to prevent rate limiting
+            await new Promise(resolve => setTimeout(resolve, 100));
+          } catch (error) {
+            console.error("❌ API request failed:", error);
+            
+            // If it's a critical request, retry once
+            if (request.isCritical && !request.hasRetried) {
+              request.hasRetried = true;
+              apiRequestQueue.unshift(request); // Put back at front of queue
+              await new Promise(resolve => setTimeout(resolve, 1000)); // Wait longer for retry
+            }
+          }
+        }
+        
+        isProcessingQueue = false;
+      }
+
+      // Add request to queue
+      function queueAPIRequest(executeFunction, isCritical = false) {
+        apiRequestQueue.push({
+          execute: executeFunction,
+          isCritical: isCritical,
+          hasRetried: false
+        });
+        
+        // Start processing if not already running
+        if (!isProcessingQueue) {
+          processAPIQueue();
+        }
+      }
+
       // API functions for syncing with server
       async function syncGameStateToServer(gameState) {
         if (!telegramUserId) return;
@@ -853,88 +909,114 @@
         const isHPZero = gameState.hp === 0;
         const isHPCritical = gameState.hp <= 0 || gameState.hp <= 10;
         
-        try {
-          if (isHPZero) {
-            console.log(`💀 CRITICAL: Syncing HP=0 to database (IMMEDIATE PRIORITY)`);
-          } else {
-            console.log(`🔄 Syncing game state to server (HP: ${gameState.hp}, Critical: ${isHPCritical})...`);
-          }
-          
-          // Use CORS proxy to bypass mixed content issue
-          const proxyUrl = 'https://api.allorigins.win/raw?url=';
-          const targetUrl = `http://211.239.114.79:3000/api/sync/${telegramUserId}`;
-          
-          const response = await fetch(proxyUrl + encodeURIComponent(targetUrl), {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "X-Requested-With": "XMLHttpRequest"
-            },
-            body: JSON.stringify({
-              ...gameState,
-              timestamp: Date.now(),
-              syncType: isHPZero ? 'hp_zero_critical' : (isHPCritical ? 'critical' : 'normal'),
-              forceSync: isHPZero // Force immediate database write for HP=0
-            }),
-          });
-
-          if (response.ok) {
-            const result = await response.json();
-            
+        // Create the sync function
+        const syncFunction = async () => {
+          try {
             if (isHPZero) {
-              console.log("💀 HP=0 sync response:", result);
-              // Verify HP=0 was actually saved
-              if (result.success && result.data && result.data.hp === 0) {
-                console.log("✅ CONFIRMED: HP=0 successfully saved to database");
+              console.log(`💀 CRITICAL: Syncing HP=0 to database (IMMEDIATE PRIORITY)`);
+            } else {
+              console.log(`🔄 Syncing game state to server (HP: ${gameState.hp}, Critical: ${isHPCritical})...`);
+            }
+            
+            // Try direct connection first, then fallback to proxy
+            let response;
+            let usedProxy = false;
+            
+            try {
+              // Direct connection attempt
+              response = await fetch(`http://211.239.114.79:3000/api/sync/${telegramUserId}`, {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                  ...gameState,
+                  timestamp: Date.now(),
+                  syncType: isHPZero ? 'hp_zero_critical' : (isHPCritical ? 'critical' : 'normal'),
+                  forceSync: isHPZero
+                }),
+              });
+            } catch (directError) {
+              console.log("🔄 Direct connection failed, trying proxy...");
+              
+              // Fallback to CORS proxy
+              const proxyUrl = 'https://api.allorigins.win/raw?url=';
+              const targetUrl = `http://211.239.114.79:3000/api/sync/${telegramUserId}`;
+              
+              response = await fetch(proxyUrl + encodeURIComponent(targetUrl), {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  "X-Requested-With": "XMLHttpRequest"
+                },
+                body: JSON.stringify({
+                  ...gameState,
+                  timestamp: Date.now(),
+                  syncType: isHPZero ? 'hp_zero_critical' : (isHPCritical ? 'critical' : 'normal'),
+                  forceSync: isHPZero
+                }),
+              });
+              usedProxy = true;
+            }
+
+            if (response.ok) {
+              const result = await response.json();
+              
+              if (isHPZero) {
+                console.log("💀 HP=0 sync response:", result);
+                if (result.success && result.data && result.data.hp === 0) {
+                  console.log("✅ CONFIRMED: HP=0 successfully saved to database");
+                } else {
+                  console.error("❌ CRITICAL ERROR: HP=0 was NOT saved correctly to database!");
+                  throw new Error("HP=0 sync verification failed");
+                }
               } else {
-                console.error("❌ CRITICAL ERROR: HP=0 was NOT saved correctly to database!");
-                console.error("Database returned HP:", result.data?.hp);
-                // Force retry for HP=0
-                setTimeout(() => {
-                  console.log("🔄 FORCE RETRYING HP=0 sync...");
-                  syncGameStateToServer(gameState);
-                }, 500);
-                return;
+                console.log("✅ Game state synced to server:", result);
+              }
+              
+              if (result.success && result.data) {
+                console.log("✅ Server confirmed HP:", result.data.hp);
               }
             } else {
-              console.log("✅ Game state synced to server:", result);
+              const errorText = await response.text();
+              console.error("❌ Failed to sync game state:", response.status, errorText);
+              
+              // Handle rate limiting with exponential backoff
+              if (response.status === 429) {
+                console.log("⏳ Rate limited - adding delay before retry...");
+                const delay = isHPZero ? 1000 : 2000; // Shorter delay for critical HP=0
+                throw new Error(`Rate limited, retry in ${delay}ms`);
+              }
+              
+              throw new Error(`HTTP ${response.status}: ${errorText}`);
             }
+          } catch (error) {
+            console.error("❌ Error syncing game state:", error);
             
-            // Verify the sync was successful by checking returned data
-            if (result.success && result.data) {
-              console.log("✅ Server confirmed HP:", result.data.hp);
-            }
-          } else {
-            const errorText = await response.text();
-            console.error("❌ Failed to sync game state:", response.status, errorText);
-            
-            // Handle rate limiting
-            if (response.status === 429) {
-              console.log("⏳ Rate limited - waiting before retry...");
-              setTimeout(() => syncGameStateToServer(gameState), 2000);
-              return;
-            }
-            
-            // CRITICAL: Always retry HP=0 syncs
-            if (isHPZero) {
-              console.log("💀 CRITICAL: Retrying HP=0 sync immediately...");
-              setTimeout(() => syncGameStateToServer(gameState), 500);
-            } else if (isHPCritical) {
-              console.log("🔄 Retrying critical HP sync...");
-              setTimeout(() => syncGameStateToServer(gameState), 1000);
+            // For critical syncs, always retry
+            if (isHPZero || isHPCritical) {
+              throw error; // Let the queue system handle retry
             }
           }
-        } catch (error) {
-          console.error("❌ Error syncing game state:", error);
-          
-          // CRITICAL: Always retry HP=0 syncs even on error
-          if (isHPZero) {
-            console.log("💀 CRITICAL ERROR: Retrying HP=0 sync after error...");
-            setTimeout(() => syncGameStateToServer(gameState), 1000);
-          } else if (isHPCritical) {
-            console.log("🔄 Retrying critical HP sync after error...");
-            setTimeout(() => syncGameStateToServer(gameState), 2000);
+        };
+
+        // Queue the request with appropriate priority
+        if (isHPZero) {
+          // HP=0 is critical - execute immediately, bypass queue
+          try {
+            await syncFunction();
+          } catch (error) {
+            // If immediate execution fails, add to front of queue for retry
+            apiRequestQueue.unshift({
+              execute: syncFunction,
+              isCritical: true,
+              hasRetried: false
+            });
+            processAPIQueue();
           }
+        } else {
+          // Normal requests go through queue
+          queueAPIRequest(syncFunction, isHPCritical);
         }
       }
 
